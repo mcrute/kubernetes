@@ -34,6 +34,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials/ec2rolecreds"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/ec2metadata"
+	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
@@ -233,6 +234,8 @@ const (
 	// Number of node names that can be added to a filter. The AWS limit is 200
 	// but we are using a lower limit on purpose
 	filterNodeLimit = 150
+
+	awsOsakaLocalRegion = "ap-northeast-3"
 )
 
 // awsTagNameMasterRoles is a set of well-known AWS tag names that indicate the instance is a master
@@ -258,8 +261,8 @@ const MaxReadThenCreateRetries = 30
 // need hardcoded defaults.
 const DefaultVolumeType = "gp2"
 
-// Used to call recognizeWellKnownRegions just once
-var once sync.Once
+// AWS implements PVLabeler.
+var _ cloudprovider.PVLabeler = (*Cloud)(nil)
 
 // Services is an abstraction over AWS, to allow mocking/other implementations
 type Services interface {
@@ -1063,14 +1066,9 @@ func newAWSCloud(cfg CloudConfig, awsServices Services) (*Cloud, error) {
 		return nil, err
 	}
 
-	// Trust that if we get a region from configuration or AWS metadata that it is valid,
-	// and register ECR providers
-	recognizeRegion(regionName)
-
 	if !cfg.Global.DisableStrictZoneCheck {
 		valid := isRegionValid(regionName)
 		if !valid {
-			// This _should_ now be unreachable, given we call RecognizeRegion
 			return nil, fmt.Errorf("not a valid AWS zone (unknown region): %s", zone)
 		}
 	} else {
@@ -1151,11 +1149,6 @@ func newAWSCloud(cfg CloudConfig, awsServices Services) (*Cloud, error) {
 			return nil, err
 		}
 	}
-
-	// Register regions, in particular for ECR credentials
-	once.Do(func() {
-		recognizeWellKnownRegions()
-	})
 
 	return awsCloud, nil
 }
@@ -4390,4 +4383,25 @@ func setNodeDisk(
 		nodeDiskMap[nodeName] = volumeMap
 	}
 	volumeMap[volumeID] = check
+}
+
+// isRegionValid accepts an AWS region name and returns if the region is a
+// valid region known to the AWS SDK
+func isRegionValid(region string) bool {
+	// ap-northeast-3 is purposely excluded from the SDK because it
+	// requires an access request see:
+	// https://github.com/aws/aws-sdk-go/issues/1863
+	if region == awsOsakaLocalRegion {
+		return true
+	}
+
+	for _, p := range endpoints.DefaultPartitions() {
+		for r := range p.Regions() {
+			if r == region {
+				return true
+			}
+		}
+	}
+
+	return false
 }

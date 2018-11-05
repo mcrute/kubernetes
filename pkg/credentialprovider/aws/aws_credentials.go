@@ -18,23 +18,58 @@ package credentials
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/ec2metadata"
+	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"k8s.io/klog"
 
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/credentialprovider"
 )
 
-const awsChinaRegionPrefix = "cn-"
-const awsStandardDNSSuffix = "amazonaws.com"
-const awsChinaDNSSuffix = "amazonaws.com.cn"
-const registryURLTemplate = "*.dkr.ecr.%s.%s"
+const (
+	awsChinaRegionPrefix        = "cn-"
+	awsStandardDNSSuffix        = "amazonaws.com"
+	awsChinaDNSSuffix           = "amazonaws.com.cn"
+	registryURLTemplate         = "*.dkr.ecr.%s.%s"
+	awsOsakaLocalRegion         = "ap-northeast-3"
+	awsAvailabilityZoneEndpoint = "placement/availability-zone"
+)
+
+func init() {
+	seen := sets.NewString()
+
+	for _, p := range endpoints.DefaultPartitions() {
+		for r := range p.Regions() {
+			if !seen.Has(r) {
+				registerCredentialsProvider(r)
+				seen.Insert(r)
+			}
+		}
+	}
+
+	// ap-northeast-3 is purposely excluded from the SDK because it requires an
+	// access request see: https://github.com/aws/aws-sdk-go/issues/1863
+	registerCredentialsProvider(awsOsakaLocalRegion)
+
+	// Register the current region if we haven't seen it already just in case
+	// we're in a region that's not in the SDK for some reason.
+	currentRegion, err := getCurrentRegion()
+	if err != nil {
+		klog.Warningf("unable to detect region for current host, error: %v", err)
+	} else if !seen.Has(currentRegion) {
+		registerCredentialsProvider(currentRegion)
+	}
+}
 
 // awsHandlerLogger is a handler that logs all AWS SDK requests
 // Copied from pkg/cloudprovider/providers/aws/log_handler.go
@@ -94,13 +129,13 @@ func registryURL(region string) string {
 	return fmt.Sprintf(registryURLTemplate, region, dnsSuffix)
 }
 
-// RegisterCredentialsProvider registers a credential provider for the specified region.
+// registerCredentialsProvider registers a credential provider for the specified region.
 // It creates a lazy provider for each AWS region, in order to support
 // cross-region ECR access. They have to be lazy because it's unlikely, but not
 // impossible, that we'll use more than one.
 // This should be called only if using the AWS cloud provider.
 // This way, we avoid timeouts waiting for a non-existent provider.
-func RegisterCredentialsProvider(region string) {
+func registerCredentialsProvider(region string) {
 	klog.V(4).Infof("registering credentials provider for AWS region %q", region)
 
 	credentialprovider.RegisterCredentialProvider("aws-ecr-"+region,
@@ -224,4 +259,31 @@ func (p *ecrProvider) Provide() credentialprovider.DockerConfig {
 		}
 	}
 	return cfg
+}
+
+// getCurrentRegion queries the local EC2 metadata service and returns the name
+// of the region in which the current host is running
+func getCurrentRegion() (string, error) {
+	// Without a timeout this hangs forever. Use a really aggressively low
+	// timeout because the ec2metadata service is bound to a local interface on
+	// the EC2 hosts.
+	sess, err := session.NewSession(aws.NewConfig().
+		WithHTTPClient(&http.Client{Timeout: 3 * time.Millisecond}).
+		WithMaxRetries(1))
+	if err != nil {
+		return "", err
+	}
+
+	client := ec2metadata.New(sess)
+	zone, err := client.GetMetadata(awsAvailabilityZoneEndpoint)
+	if err != nil {
+		return "", err
+	}
+
+	if v := strings.Trim(zone, " "); len(v) <= 1 {
+		return "", errors.New("ec2metadata returned a blank zone")
+	}
+
+	// Zone format: ${REGION}-${LOCATION}-${NUMBER}${ZONE} (ex: us-west-2c)
+	return zone[:len(zone)-1], nil
 }
