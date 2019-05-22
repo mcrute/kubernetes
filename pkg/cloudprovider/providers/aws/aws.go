@@ -4334,8 +4334,12 @@ func (c *Cloud) describeInstances(filters []*ec2.Filter) ([]*ec2.Instance, error
 
 // TODO: Move to instanceCache
 func (c *Cloud) describeInstancesRaw(filters []*ec2.Filter) ([]*ec2.Instance, error) {
-	request := &ec2.DescribeInstancesInput{
-		Filters: filters,
+	request := &ec2.DescribeInstancesInput{}
+
+	// instances.go calls this to cache all instances, without this it results
+	// in a 400 from EC2
+	if filters != nil {
+		request.Filters = filters
 	}
 
 	response, err := c.ec2.DescribeInstances(request)
