@@ -158,7 +158,7 @@ func (c *instanceCache) describeAllInstancesUncached() (*allInstancesSnapshot, e
 	glog.V(4).Infof("EC2 DescribeInstances - fetching all instances")
 
 	filters := []*ec2.Filter{}
-	instances, err := c.cloud.describeInstances(filters)
+	instances, err := c.cloud.describeInstancesRaw(filters)
 	if err != nil {
 		return nil, err
 	}

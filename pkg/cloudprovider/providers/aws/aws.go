@@ -1486,26 +1486,11 @@ func (c *Cloud) GetCandidateZonesForDynamicVolume() (sets.String, error) {
 	// filters than to call it once with a tag filter that results in a logical
 	// OR. For really large clusters the logical OR will result in EC2 API rate
 	// limiting.
-	instances := []*ec2.Instance{}
+	filters := []*ec2.Filter{newEc2Filter("instance-state-name", "running")}
 
-	baseFilters := []*ec2.Filter{newEc2Filter("instance-state-name", "running")}
-
-	filters := c.tagging.addFilters(baseFilters)
-	di, err := c.describeInstances(filters)
+	instances, err := c.describeInstances(filters)
 	if err != nil {
 		return nil, err
-	}
-
-	instances = append(instances, di...)
-
-	if c.tagging.usesLegacyTags {
-		filters = c.tagging.addLegacyFilters(baseFilters)
-		di, err = c.describeInstances(filters)
-		if err != nil {
-			return nil, err
-		}
-
-		instances = append(instances, di...)
 	}
 
 	if len(instances) == 0 {
@@ -4325,8 +4310,30 @@ func (c *Cloud) getInstancesByNodeNames(nodeNames []string, states ...string) ([
 	return ec2Instances, nil
 }
 
-// TODO: Move to instanceCache
 func (c *Cloud) describeInstances(filters []*ec2.Filter) ([]*ec2.Instance, error) {
+	instances := []*ec2.Instance{}
+
+	di, err := c.describeInstances(c.tagging.addFilters(filters))
+	if err != nil {
+		return nil, err
+	}
+
+	instances = append(instances, di...)
+
+	if c.tagging.usesLegacyTags {
+		di, err = c.describeInstances(c.tagging.addLegacyFilters(filters))
+		if err != nil {
+			return nil, err
+		}
+
+		instances = append(instances, di...)
+	}
+
+	return instances, nil
+}
+
+// TODO: Move to instanceCache
+func (c *Cloud) describeInstancesRaw(filters []*ec2.Filter) ([]*ec2.Instance, error) {
 	request := &ec2.DescribeInstancesInput{
 		Filters: filters,
 	}
