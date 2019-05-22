@@ -4313,7 +4313,7 @@ func (c *Cloud) getInstancesByNodeNames(nodeNames []string, states ...string) ([
 func (c *Cloud) describeInstances(filters []*ec2.Filter) ([]*ec2.Instance, error) {
 	instances := []*ec2.Instance{}
 
-	di, err := c.describeInstances(c.tagging.addFilters(filters))
+	di, err := c.describeInstancesRaw(c.tagging.addFilters(filters))
 	if err != nil {
 		return nil, err
 	}
@@ -4321,7 +4321,7 @@ func (c *Cloud) describeInstances(filters []*ec2.Filter) ([]*ec2.Instance, error
 	instances = append(instances, di...)
 
 	if c.tagging.usesLegacyTags {
-		di, err = c.describeInstances(c.tagging.addLegacyFilters(filters))
+		di, err = c.describeInstancesRaw(c.tagging.addLegacyFilters(filters))
 		if err != nil {
 			return nil, err
 		}
